@@ -11,8 +11,17 @@ if (TENSORRT_INCLUDE_DIR)
 else ()
     message(ERROR "Cannot find TensorRT headers")
 endif ()
-
+if(NV_TENSORRT_MAJOR GREATER 8)
+    find_library(
+        TENSORRT_LIBRARY_INFER nvinfer_10
+        HINTS ${TENSORRT_DIR} ${TENSORRT_BUILD} ${CUDA_TOOLKIT_ROOT_DIR}
+        PATH_SUFFIXES lib lib64 lib/x64)
 find_library(
+        TENSORRT_LIBRARY_INFER_PLUGIN nvinfer_plugin_10
+        HINTS ${TENSORRT_DIR} ${TENSORRT_BUILD} ${CUDA_TOOLKIT_ROOT_DIR}
+        PATH_SUFFIXES lib lib64 lib/x64)
+else()
+    find_library(
         TENSORRT_LIBRARY_INFER nvinfer
         HINTS ${TENSORRT_DIR} ${TENSORRT_BUILD} ${CUDA_TOOLKIT_ROOT_DIR}
         PATH_SUFFIXES lib lib64 lib/x64)
@@ -20,6 +29,8 @@ find_library(
         TENSORRT_LIBRARY_INFER_PLUGIN nvinfer_plugin
         HINTS ${TENSORRT_DIR} ${TENSORRT_BUILD} ${CUDA_TOOLKIT_ROOT_DIR}
         PATH_SUFFIXES lib lib64 lib/x64)
+endif()
+
 set(TENSORRT_LIBRARY ${TENSORRT_LIBRARY_INFER}
         ${TENSORRT_LIBRARY_INFER_PLUGIN})
 if (TENSORRT_LIBRARY_INFER
