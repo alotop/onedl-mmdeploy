@@ -49,7 +49,7 @@ jobs:
         attestations: write
         id-token: write
     env:
-      IMAGE_NAME: onedl-mmdeploy-gpu-cu124
+      IMAGE_NAME: onedl-mmdeploy-gpu-cu129
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -68,7 +68,7 @@ jobs:
           swap-storage: true
 
       - name: Checkout repository at specific tag
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.extract_version.outputs.tag_name }}
           submodules: 'recursive'
@@ -149,9 +149,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - jetpack_version: "60"
-            image_name: onedl-mmdeploy-jetson-jp60
-            dockerfile: ./docker/GPU/Dockerfile.jetson60
           - jetpack_version: "61"
             image_name: onedl-mmdeploy-jetson-jp61
             dockerfile: ./docker/GPU/Dockerfile.jetson61
@@ -173,7 +170,7 @@ jobs:
           swap-storage: true
 
       - name: Checkout repository at specific tag
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.extract_version.outputs.tag_name }}
           submodules: 'recursive'
