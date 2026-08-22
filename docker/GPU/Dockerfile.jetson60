@@ -26,9 +26,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache \
     dpkg -i cuda-keyring_1.1-1_all.deb && apt-get update \
     && apt-get install -y --no-install-recommends \
     git python3-pip libopenmpi-dev libopenblas-dev libomp-dev libcusparselt0 libcusparselt-dev \
-    curl libspdlog-dev vim pkg-config cmake cudss \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    curl libspdlog-dev vim pkg-config cmake cudss
 
 # install torch, torchvision, onnx
 # https://pypi.jetson-ai-lab.dev/
@@ -50,7 +48,8 @@ ENV PPLCV_DIR=/workspace/ppl.cv
 WORKDIR /workspace
 # install onedl-mmcv
 RUN --mount=type=cache,target=/root/.cache/pip,id=pip \
-    python3 -m pip install --no-cache "onedl-mmcv${MMCV_VERSION}" "onedl-mmengine${MMENGINE_VERSION}"  --only-binary=onedl-mmcv -f https://mmwheels.onedl.ai/jp60-torch280/
+    python3 -m pip install --no-cache "onedl-mmcv${MMCV_VERSION}" "onedl-mmengine${MMENGINE_VERSION}"  --only-binary=onedl-mmcv -f https://mmwheels.onedl.ai/jetpack60-torch280/simple/onedl-mmcv &&\
+    python3 -m pip install onedl-mim
 
 # ### install mmdeploy
 ENV TENSORRT_DIR=/workspace/tensorrt
