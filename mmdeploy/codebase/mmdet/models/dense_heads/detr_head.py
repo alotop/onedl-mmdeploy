@@ -9,6 +9,8 @@ from mmdeploy.core import FUNCTION_REWRITER
 
 
 @FUNCTION_REWRITER.register_rewriter(
+    'mmdet.models.dense_heads.DDQDETRHead.predict_by_feat')
+@FUNCTION_REWRITER.register_rewriter(
     'mmdet.models.dense_heads.DeformableDETRHead.predict_by_feat')
 @FUNCTION_REWRITER.register_rewriter(
     'mmdet.models.dense_heads.DETRHead.predict_by_feat')

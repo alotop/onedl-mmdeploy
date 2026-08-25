@@ -175,3 +175,5 @@ work_dir*/
 
 # onnx
 *.onnx
+mmdeploy_build*/
+/work-dirs
