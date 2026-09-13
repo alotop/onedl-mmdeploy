@@ -70,6 +70,7 @@ class TRTInstanceNormalization final : public TRTPluginBase {
   float mEpsilon{};
   cudnnHandle_t _cudnn_handle{};
   cudnnTensorDescriptor_t _x_desc{}, _y_desc{}, _b_desc{};
+  bool _own_cudnn_handle{false};
   std::string mPluginNamespace{};
 };
 

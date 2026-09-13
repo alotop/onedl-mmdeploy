@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import os
 from typing import Any, Dict, Optional, Sequence, Union
 
 import tensorrt as trt
@@ -54,6 +55,27 @@ def torch_device_from_trt(device: trt.TensorLocation):
         return TypeError(f'{device} is not supported by torch')
 
 
+def _use_torch_allocator() -> bool:
+    """Whether TensorRT should use the torch CUDA caching allocator for its
+    temporary (scratch) GPU memory.
+
+    Disabled by default.  Set ``MMDEPLOY_TRT_USE_TORCH_ALLOCATOR=1`` to opt in.
+
+    Reason for the default: TensorRT asks this allocator for scratch memory
+    from *inside* ``execute_async_v3``.  ``torch.cuda.caching_allocator_alloc``
+    performs a CUDA runtime check that converts any *pending* CUDA error into a
+    Python exception.  A pending error can be left behind by an unrelated
+    kernel launch (for example a probe launch for which the loaded cuDNN /
+    plugin build has no kernel image for the current architecture, e.g. sm_120
+    on Blackwell).  TensorRT catches the exception and misreports it as
+    ``Error Code 2: OutOfMemory``, then aborts the entire execution - so the
+    engine "cannot infer" and the outputs are never written.  TensorRT's own
+    allocator has no such failure mode, which is why it is used by default.
+    """
+    val = os.environ.get('MMDEPLOY_TRT_USE_TORCH_ALLOCATOR', '0')
+    return str(val).strip().lower() not in ('', '0', 'false', 'no', 'off')
+
+
 @BACKEND_WRAPPER.register_module(Backend.TENSORRT.value)
 class TRTWrapper(BaseWrapper):
     """TensorRT engine wrapper for inference.
@@ -95,7 +117,8 @@ class TRTWrapper(BaseWrapper):
         self._register_state_dict_hook(TRTWrapper.__on_state_dict)
         self.context = self.engine.create_execution_context()
 
-        if hasattr(self.context, 'temporary_allocator'):
+        if hasattr(self.context, 'temporary_allocator') and \
+                _use_torch_allocator():
             self.context.temporary_allocator = self.allocator
 
         self.__load_io_names()

@@ -357,8 +357,14 @@ void create_desc(const int *dims, int nb_dims, TensorDesc &desc) {
   }
 }
 #else
-void create_desc(const long int *dims, int nb_dims, TensorDesc &desc) {
-  memcpy(&desc.shape[0], dims, sizeof(int) * nb_dims);
+void create_desc(const int64_t *dims, int nb_dims, TensorDesc &desc) {
+  // TensorRT >= 10 stores dims as int64_t while TensorDesc::shape is int32.
+  // Copy element by element: memcpy() would reinterpret the 8 byte dims as
+  // 4 byte values (producing e.g. [N, 0, C, 0]), which collapses `count` to
+  // zero and launches a zero-sized grid (cudaErrorInvalidConfiguration).
+  for (int i = 0; i < nb_dims; ++i) {
+    desc.shape[i] = static_cast<int>(dims[i]);
+  }
   desc.stride[nb_dims - 1] = 1;
   for (int i = nb_dims - 2; i >= 0; --i) {
     desc.stride[i] = desc.stride[i + 1] * desc.shape[i + 1];
@@ -407,8 +413,8 @@ template void grid_sample<float>(float *output, const float *input, const float 
                                  bool align_corners, cudaStream_t stream);
 #else
 template <typename T>
-void grid_sample(T *output, const T *input, const T *grid, long int *output_dims,
-                 long int *input_dims, long int *grid_dims, int nb_dims,
+void grid_sample(T *output, const T *input, const T *grid, int64_t *output_dims,
+                 int64_t *input_dims, int64_t *grid_dims, int nb_dims,
                  GridSamplerInterpolation interp, GridSamplerPadding padding, bool align_corners,
                  cudaStream_t stream) {
   TensorDesc input_desc;
@@ -442,7 +448,7 @@ void grid_sample(T *output, const T *input, const T *grid, long int *output_dims
 }
 
 template void grid_sample<float>(float *output, const float *input, const float *grid,
-                                 long int *output_dims, long int *input_dims, long int *grid_dims,
+                                 int64_t *output_dims, int64_t *input_dims, int64_t *grid_dims,
                                  int nb_dims, GridSamplerInterpolation interp,
                                  GridSamplerPadding padding, bool align_corners,
                                  cudaStream_t stream);

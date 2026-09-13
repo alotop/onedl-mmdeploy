@@ -111,9 +111,9 @@ int TRTGridSampler::enqueue(const nvinfer1::PluginTensorDesc *inputDesc,
     case nvinfer1::DataType::kFLOAT:
 #if NV_TENSORRT_MAJOR >= 10
       grid_sample<float>((float *)outputs[0], (float *)inputs[0], (float *)inputs[1],
-                         reinterpret_cast<long int *>(&(output_dims.d[0])),
-                         reinterpret_cast<long int *>(&(input_dims.d[0])),
-                         reinterpret_cast<long int *>(&(grid_dims.d[0])), input_dims.nbDims,
+                         reinterpret_cast<int64_t *>(&(output_dims.d[0])),
+                         reinterpret_cast<int64_t *>(&(input_dims.d[0])),
+                         reinterpret_cast<int64_t *>(&(grid_dims.d[0])), input_dims.nbDims,
                          interp_mode, padding_mode, mAlignCorners, stream);
 #else
       grid_sample<float>((float *)outputs[0], (float *)inputs[0], (float *)inputs[1],

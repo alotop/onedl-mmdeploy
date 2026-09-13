@@ -95,6 +95,25 @@ if (NOT CMAKE_CUDA_ARCHITECTURES)
             set(_NVCC_FLAGS "${_NVCC_FLAGS} -gencode arch=compute_87,code=sm_87")
         endif ()
     endif ()
+    # Ada (sm_89) needs CUDA >= 11.8
+    if (NOT CUDA_VERSION VERSION_LESS "11.8")
+        set(_NVCC_FLAGS "${_NVCC_FLAGS} -gencode arch=compute_89,code=sm_89")
+    endif ()
+    # Hopper (sm_90) needs CUDA >= 12.0
+    if (NOT CUDA_VERSION VERSION_LESS "12.0")
+        set(_NVCC_FLAGS "${_NVCC_FLAGS} -gencode arch=compute_90,code=sm_90")
+    endif ()
+    # Blackwell (sm_100/sm_120) needs CUDA >= 12.8.  Without these the
+    # mmdeploy TensorRT plugin kernels (grid_sampler, modulated_deform_conv,
+    # multi_scale_deform_attn, ...) have no cubin for RTX 50 / B100 / B200 GPUs
+    # and fail at inference time with cudaErrorNoKernelImageForDevice, which
+    # surfaces as a bogus "Error Code 2: OutOfMemory" from TensorRT.
+    # PTX is embedded as well so future architectures can still JIT from it.
+    if (NOT CUDA_VERSION VERSION_LESS "12.8")
+        set(_NVCC_FLAGS "${_NVCC_FLAGS} -gencode arch=compute_100,code=sm_100")
+        set(_NVCC_FLAGS "${_NVCC_FLAGS} -gencode arch=compute_120,code=sm_120")
+        set(_NVCC_FLAGS "${_NVCC_FLAGS} -gencode arch=compute_120,code=compute_120")
+    endif ()
 endif ()
 
 set(CMAKE_CUDA_FLAGS_DEBUG "-g -O0")

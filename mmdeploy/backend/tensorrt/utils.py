@@ -228,6 +228,29 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
         from .calib_utils import HDF5Calibrator
         config.set_flag(trt.BuilderFlag.INT8)
         assert int8_param is not None
+        # TensorRT calibrates with `config.calibration_profile`.  Without one
+        # it falls back to optimization profile 0, i.e. the *min* shape of a
+        # dynamic profile, while HDF5Calibrator.get_batch() always returns
+        # *opt*-shaped batches.  That mismatch makes calibrateEngine() abort
+        # with an internal error ("invalid encoded reference to a slot").
+        # Use a dedicated static profile at the opt shape for calibration.
+        if hasattr(config, 'set_calibration_profile'):
+            try:
+                calib_profile = builder.create_optimization_profile()
+                for input_name, param in input_shapes.items():
+                    opt_shape = tuple(param['opt_shape'])
+                    calib_profile.set_shape(input_name, opt_shape, opt_shape,
+                                            opt_shape)
+                config.set_calibration_profile(calib_profile)
+                opt_shapes = {
+                    n: tuple(p['opt_shape'])
+                    for n, p in input_shapes.items()
+                }
+                logger.info(
+                    f'Set static int8 calibration profile to opt shape '
+                    f'{opt_shapes}')
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f'Could not set calibration profile: {e}')
         config.int8_calibrator = HDF5Calibrator(
             int8_param['calib_file'],
             input_shapes,

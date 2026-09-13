@@ -53,6 +53,28 @@ int TRTInstanceNormalization::enqueue(const nvinfer1::PluginTensorDesc* inputDes
                                       const nvinfer1::PluginTensorDesc* outputDesc,
                                       const void* const* inputs, void* const* outputs,
                                       void* workspace, cudaStream_t stream) TRT_NOEXCEPT {
+  // TensorRT 10 does not necessarily hand a cuDNN handle to a plugin (and may
+  // not call attachToContext() at all), so _cudnn_handle / the tensor
+  // descriptors can be null here.  Every cuDNN call below would then fail,
+  // and since their return codes are not checked the plugin would silently
+  // leave its output untouched - i.e. behave as a zero-producing no-op, which
+  // destroys the whole network output.  Create whatever is missing.
+  if (_cudnn_handle == nullptr) {
+    if (cudnnCreate(&_cudnn_handle) != CUDNN_STATUS_SUCCESS) {
+      return 1;
+    }
+    _own_cudnn_handle = true;
+  }
+  if (_x_desc == nullptr) {
+    cudnnCreateTensorDescriptor(&_x_desc);
+  }
+  if (_y_desc == nullptr) {
+    cudnnCreateTensorDescriptor(&_y_desc);
+  }
+  if (_b_desc == nullptr) {
+    cudnnCreateTensorDescriptor(&_b_desc);
+  }
+
   nvinfer1::Dims input_dims = inputDesc[0].dims;
   int n = input_dims.d[0];
   int c = input_dims.d[1];
@@ -62,6 +84,21 @@ int TRTInstanceNormalization::enqueue(const nvinfer1::PluginTensorDesc* inputDes
 
   void* n_scales = (void*)workspace;
   void* n_bias = (void*)((char*)workspace + getAlignedSize(n * c * elem_size));
+
+  // TensorRT's INT8 calibration path (calibrateEngine -> executeV2) does not
+  // pass a workspace to the plugin.  Writing the scale/bias copies through the
+  // null pointer poisons the CUDA context and TensorRT then aborts the whole
+  // build ("calibrateEngine ... executeV2(bindings.data()) failed").  Allocate
+  // our own scratch buffer when TensorRT gives us none.
+  const size_t ws_size = getAlignedSize(n * c * elem_size) * 2;
+  void* own_ws = nullptr;
+  if (n_scales == nullptr && ws_size > 0) {
+    if (cudaMalloc(&own_ws, ws_size) != cudaSuccess) {
+      return 1;
+    }
+    n_scales = own_ws;
+    n_bias = (void*)((char*)own_ws + getAlignedSize(n * c * elem_size));
+  }
 
   const void* scales = (const void*)inputs[1];
   const void* bias = (const void*)inputs[2];
@@ -90,6 +127,9 @@ int TRTInstanceNormalization::enqueue(const nvinfer1::PluginTensorDesc* inputDes
   cudnnBatchNormalizationForwardTraining(_cudnn_handle, CUDNN_BATCHNORM_SPATIAL_PERSISTENT, &alpha,
                                          &beta, _x_desc, x_ptr, _y_desc, y_ptr, _b_desc, n_scales,
                                          n_bias, 1., nullptr, nullptr, mEpsilon, nullptr, nullptr);
+  if (own_ws != nullptr) {
+    cudaFree(own_ws);
+  }
   return 0;
 }
 
@@ -145,6 +185,7 @@ void TRTInstanceNormalization::attachToContext(cudnnContext* cudnnContext,
                                                cublasContext* cublasContext,
                                                IGpuAllocator* gpuAllocator) TRT_NOEXCEPT {
   _cudnn_handle = cudnnContext;
+  _own_cudnn_handle = false;
   cudnnCreateTensorDescriptor(&_b_desc);
   cudnnCreateTensorDescriptor(&_x_desc);
   cudnnCreateTensorDescriptor(&_y_desc);
@@ -163,6 +204,12 @@ void TRTInstanceNormalization::detachFromContext() TRT_NOEXCEPT {
   if (_b_desc) {
     cudnnDestroyTensorDescriptor(_b_desc);
     _b_desc = nullptr;
+  }
+  // only destroy the handle when we created it ourselves
+  if (_own_cudnn_handle && _cudnn_handle != nullptr) {
+    cudnnDestroy(_cudnn_handle);
+    _cudnn_handle = nullptr;
+    _own_cudnn_handle = false;
   }
 }
 
