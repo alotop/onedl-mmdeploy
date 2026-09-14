@@ -35,7 +35,9 @@ class PyRotatedDetector {
     auto counts = res_count;
     for (int i = 0; i < mats.size(); i++) {
       auto _dets = py::array_t<float>({*counts, 6});
-      auto _labels = py::array_t<int>({*counts});
+      // explicit container: pybind11 2.11's array_t(ssize_t count) overload builds a
+      // zero-stride array, which would make every element alias the same slot
+      auto _labels = py::array_t<int>(std::vector<py::ssize_t>{*counts});
       auto dets = _dets.mutable_data();
       auto labels = _labels.mutable_data();
       for (int j = 0; j < *counts; j++) {

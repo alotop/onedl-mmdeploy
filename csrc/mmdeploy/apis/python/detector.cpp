@@ -36,7 +36,11 @@ class PyDetector {
     auto result = detection;
     for (int i = 0; i < mats.size(); ++i) {
       auto bboxes = py::array_t<float>({result_count[i], 5});
-      auto labels = py::array_t<int>(result_count[i]);
+      // NOTE: pass the shape as an explicit container. In pybind11 2.11 the
+      // `array_t<T>(ssize_t count)` overload (which a single-element braced list
+      // also selects) builds the array with strides {0}, so every element aliases
+      // the same slot and only the last written label survives.
+      auto labels = py::array_t<int>(std::vector<py::ssize_t>{result_count[i]});
       auto masks = std::vector<py::array>();
       masks.reserve(result_count[i]);
       for (int j = 0; j < result_count[i]; ++j, ++result) {

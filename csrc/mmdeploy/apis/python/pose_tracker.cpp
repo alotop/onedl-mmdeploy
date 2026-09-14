@@ -33,7 +33,9 @@ std::vector<py::tuple> Apply(mmdeploy::PoseTracker* self,
     py::array_t<float> keypoints(
         {static_cast<int>(rs.size()), rs.size() > 0 ? rs[0].keypoint_count : 0, 3});
     py::array_t<float> bboxes({static_cast<int>(rs.size()), 4});
-    py::array_t<uint32_t> track_ids(static_cast<int>(rs.size()));
+    // explicit container: pybind11 2.11's array_t(ssize_t count) overload builds a
+    // zero-stride array, which would make every element alias the same slot
+    py::array_t<uint32_t> track_ids(std::vector<py::ssize_t>{static_cast<py::ssize_t>(rs.size())});
     auto kpts_ptr = keypoints.mutable_data();
     auto bbox_ptr = bboxes.mutable_data();
     auto track_id_ptr = track_ids.mutable_data();
