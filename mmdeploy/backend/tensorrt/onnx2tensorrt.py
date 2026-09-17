@@ -85,4 +85,12 @@ def onnx2tensorrt(work_dir: str,
         int8_mode=final_params.get('int8_mode', False),
         int8_param=int8_param,
         max_workspace_size=final_params.get('max_workspace_size', 0),
+        # TensorRT-only graph pass: bound the candidate count that reaches
+        # NonMaxSuppression (DDQ-DETR feeds it ~22k encoder proposals).
+        # 0 (default) leaves the exported ONNX untouched.
+        nms_pre_topk=final_params.get('nms_pre_topk', 0),
+        # TensorRT-only graph pass: use the native FP16-capable GridSample
+        # layer instead of mmdeploy's FLOAT-only plugin.  None = "on iff
+        # fp16_mode" (it is a regression for FP32 engines).
+        use_native_grid_sample=final_params.get('native_grid_sample', None),
         device_id=device_id)

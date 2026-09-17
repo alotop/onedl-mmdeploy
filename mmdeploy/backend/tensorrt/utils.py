@@ -104,6 +104,8 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
               int8_param: Optional[dict] = None,
               device_id: int = 0,
               log_level: trt.Logger.Severity = trt.Logger.ERROR,
+              nms_pre_topk: int = 0,
+              use_native_grid_sample: Optional[bool] = None,
               **kwargs) -> trt.ICudaEngine:
     """Create a tensorrt engine from ONNX.
 
@@ -122,6 +124,16 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
         device_id (int): Choice the device to create engine. Defaults to `0`.
         log_level (trt.Logger.Severity): The log level of TensorRT. Defaults to
             `trt.Logger.ERROR`.
+        nms_pre_topk (int): If > 0, bound the number of candidate boxes that
+            reach every `NonMaxSuppression` node.  TensorRT's NMS costs about
+            1.8 us per candidate, so DETR-style models that run NMS over all
+            encoder tokens (DDQ-DETR: ~22k boxes) get a large speedup.  <= 0
+            leaves the exported graph untouched. Defaults to `0`.
+        use_native_grid_sample (bool | None): replace mmdeploy's FLOAT-only
+            `grid_sampler` plugin with TensorRT's native (FP16-capable)
+            `GridSample` layer.  `None` (default) means "on iff fp16_mode",
+            because the native layer is a regression in FP32 engines.  Set
+            `False` to keep the plugin even for FP16.
 
     Returns:
         tensorrt.ICudaEngine: The TensorRT engine created from onnx_model.
@@ -170,6 +182,16 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
 
     # parse onnx
     parser = trt.OnnxParser(network, trt_logger)
+
+    # TensorRT-only graph passes (native GridSample for fp16, NMS candidate
+    # bounding).  Applied to the in-memory model so the exported .onnx file
+    # stays spec-compliant.
+    from .graph_passes import apply_trt_graph_passes
+    onnx_model = apply_trt_graph_passes(
+        onnx_model,
+        fp16_mode=fp16_mode,
+        nms_pre_topk=nms_pre_topk,
+        use_native_grid_sample=use_native_grid_sample)
 
     if isinstance(onnx_model, str):
         parse_valid = parser.parse_from_file(onnx_model)
