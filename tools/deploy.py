@@ -7,6 +7,7 @@ from functools import partial
 
 import mmengine
 import torch.multiprocessing as mp
+from onnxsim import simplify
 from torch.multiprocessing import Process, set_start_method
 
 from mmdeploy.apis import (create_calib_input_data, extract_model,
@@ -50,6 +51,8 @@ def parse_args():
         choices=list(logging._nameToLevel.keys()))
     parser.add_argument(
         '--show', action='store_true', help='Show detection outputs')
+    parser.add_argument(
+        '--onnxsim', action='store_true', help='onnxsim simplify onnx file')
     parser.add_argument(
         '--dump-info', action='store_true', help='Output information for SDK')
     parser.add_argument(
@@ -150,7 +153,17 @@ def main():
 
     # convert backend
     ir_files = [osp.join(args.work_dir, ir_save_file)]
-
+    if ir_type.value == 'onnx' and args.onnxsim:
+        oringin_ir_files = ir_files
+        import onnx
+        model = onnx.load(oringin_ir_files[0])
+        model_simp, check = simplify(model)
+        assert check, 'Simplified ONNX model is invalid'
+        ir_files = [
+            osp.join(args.work_dir,
+                     ir_save_file.replace('end2end', 'end2end_sim'))
+        ]
+        onnx.save(model_simp, ir_files[0])
     # partition model
     partition_cfgs = get_partition_config(deploy_cfg)
 

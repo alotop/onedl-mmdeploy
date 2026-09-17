@@ -2,6 +2,7 @@
 from typing import List
 
 import torch
+import torchvision
 from torch import Tensor
 from torch.nn import functional as F
 
@@ -64,3 +65,11 @@ def detrhead__predict_by_feat__default(self,
     det_bboxes = torch.cat((det_bboxes, scores.unsqueeze(-1)), -1)
 
     return det_bboxes, det_labels
+
+
+@FUNCTION_REWRITER.register_rewriter(func_name='mmcv.ops.batched_nms')
+def batched_nms__tensorrt(boxes, scores, idxs, nms_cfg, class_agnostic=False):
+    keep = torchvision.ops.nms(
+        boxes, scores, iou_threshold=nms_cfg.iou_threshold)
+    dets = torch.cat([boxes[keep], scores[keep, None]], dim=1)
+    return dets, keep
