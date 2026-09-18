@@ -93,4 +93,13 @@ def onnx2tensorrt(work_dir: str,
         # layer instead of mmdeploy's FLOAT-only plugin.  None = "on iff
         # fp16_mode" (it is a regression for FP32 engines).
         use_native_grid_sample=final_params.get('native_grid_sample', None),
+        # TensorRT-only graph pass: replace the pre-decoder NonMaxSuppression
+        # (which sees every encoder token) with the TRTBatchedNMS plugin.
+        # 0 (default) leaves it to the ONNX implementation.
+        nms_efficient_keep_topk=final_params.get('nms_efficient_keep_topk', 0),
+        nms_efficient_topk=final_params.get('nms_efficient_topk', 3000),
+        # Keep the MSDA plugin in FP32 (its FP16 kernel accumulates in half
+        # precision, which is less accurate than the decomposed path it
+        # replaces).  Default False = let the builder decide.
+        msda_fp32=final_params.get('msda_fp32', False),
         device_id=device_id)

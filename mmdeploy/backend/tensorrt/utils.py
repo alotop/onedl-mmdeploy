@@ -106,6 +106,9 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
               log_level: trt.Logger.Severity = trt.Logger.ERROR,
               nms_pre_topk: int = 0,
               use_native_grid_sample: Optional[bool] = None,
+              nms_efficient_keep_topk: int = 0,
+              nms_efficient_topk: int = 3000,
+              msda_fp32: bool = False,
               **kwargs) -> trt.ICudaEngine:
     """Create a tensorrt engine from ONNX.
 
@@ -134,6 +137,15 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
             `GridSample` layer.  `None` (default) means "on iff fp16_mode",
             because the native layer is a regression in FP32 engines.  Set
             `False` to keep the plugin even for FP16.
+        nms_efficient_keep_topk (int): if > 0, replace the pre-decoder
+            `NonMaxSuppression` with mmdeploy's `TRTBatchedNMS` (EfficientNMS)
+            plugin keeping this many boxes.  TensorRT's own NMS costs ~1.8 us
+            per candidate, so for DDQ-DETR (22323 pre-decoder candidates) this
+            is a large win; the plugin's index output references the original
+            candidate array, so it is a drop-in replacement.  Defaults to `0`.
+        nms_efficient_topk (int): the plugin's own pre-NMS top-k, clamped to
+            5120 (`allClassNMS.cu` asserts `ceil(top_k / 512) <= 10`).
+            Defaults to `3000`.
 
     Returns:
         tensorrt.ICudaEngine: The TensorRT engine created from onnx_model.
@@ -191,7 +203,9 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
         onnx_model,
         fp16_mode=fp16_mode,
         nms_pre_topk=nms_pre_topk,
-        use_native_grid_sample=use_native_grid_sample)
+        use_native_grid_sample=use_native_grid_sample,
+        nms_efficient_keep_topk=nms_efficient_keep_topk,
+        nms_efficient_topk=nms_efficient_topk)
 
     if isinstance(onnx_model, str):
         parse_valid = parser.parse_from_file(onnx_model)
@@ -211,6 +225,27 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
         builder.max_workspace_size = max_workspace_size
 
     config = builder.create_builder_config()
+
+    # Keep the MSDA plugin in FP32 (see the `msda_fp32` argument).  Its FP16
+    # kernel accumulates in half precision (`col = __hadd(col, __hmul(tpVal,
+    # weight))` in trt_ms_deform_attn_kernel.cuh), which is *less* accurate
+    # than the decomposed grid_sample path it replaces -- that path
+    # accumulated the weighted sum in FP32.  On DDQ-DETR the FP16 plugin moved
+    #  2 of 134 high-confidence boxes by >0.05 score; pinning it to FP32
+    # removes that. `OBEY_PRECISION_CONSTRAINTS` is what makes
+    # `layer.precision` binding.
+    if msda_fp32:
+        pinned = 0
+        for i in range(network.num_layers):
+            layer = network.get_layer(i)
+            if layer.type == 'MMCVMultiScaleDeformableAttention':
+                layer.precision = trt.DataType.FLOAT
+                layer.set_output_type(0, trt.DataType.FLOAT)
+                pinned += 1
+        obey = getattr(trt.BuilderFlag, 'OBEY_PRECISION_CONSTRAINTS', None)
+        if pinned and obey is not None:
+            config.set_flag(obey)
+            logger.info(f'Pinned {pinned} MSDA plugin layer(s) to FP32')
 
     if hasattr(config, 'set_memory_pool_limit'):
         config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE,

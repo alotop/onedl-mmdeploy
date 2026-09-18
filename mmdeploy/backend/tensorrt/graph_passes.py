@@ -33,7 +33,7 @@ import logging
 
 import numpy as np
 import onnx
-from onnx import TensorProto, helper, numpy_helper
+from onnx import helper, numpy_helper
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +220,7 @@ def bound_nms_candidates(model, pre_topk):
             # The NMS index column is also captured *implicitly* by the
             # following ONNX `If` subgraphs, so a plain consumer rewrite would
             # leave those subgraphs indexing the narrowed array.  Renaming the
-            # raw tensor and re-using its original name for the remapped one
+            # raw tensor and reusing its original name for the remapped one
             # fixes every reference, explicit or implicit.
             col = consumers[nms.output[0]][0]
             if col.op_type != 'Gather':
@@ -250,6 +250,120 @@ def bound_nms_candidates(model, pre_topk):
     return patched
 
 
+def _const_scalar(by_output, graph, name, default=None):
+    """Read a scalar constant from an initializer or a Constant node."""
+    for init in graph.initializer:
+        if init.name == name:
+            return float(numpy_helper.to_array(init).reshape(-1)[0])
+    node = by_output.get(name)
+    if node is not None and node.op_type == 'Constant':
+        return float(numpy_helper.to_array(node.attribute[0].t).reshape(-1)[0])
+    return default
+
+
+# allClassNMS.cu launches `kernel[t_size - 1] <<<num_classes, BS>>>` with
+# BS = 512 and `ASSERT(t_size <= 10)`, so the plugin's own pre-NMS top-k is
+# capped at 5120 candidates -- and with num_classes == 1 the whole NMS runs on
+# a single thread block, which is why class-agnostic NMS is not free there.
+MAX_EFFICIENT_TOPK = 10 * 512
+
+
+def swap_first_nms_for_efficient(model, keep_topk, topk=3000):
+    """Replace the *first* `NonMaxSuppression` node with
+    `mmdeploy::TRTBatchedNMS` (EfficientNMS).  Returns 1 on success, else 0.
+
+    Why only the first node: DDQ-DETR runs its two-stage query selection (NMS
+    over **all** encoder tokens) before the decoder, plus one small NMS per
+    decoder layer.  Only the first sees a large candidate set.  The decoder
+    ones are deliberately left alone -- their keep-index *count* is semantic
+    (it builds the distinct-query attention mask) and the plugin pads unused
+    slots with -1, which would silently unmask queries.
+
+    Why the plugin: TensorRT's ONNX `NonMaxSuppression` costs ~1.8 us per
+    candidate (22323 -> ~36 ms standalone).  `TRTBatchedNMS` runs its own GPU
+    top-k first (22323 candidates, topk=3000 -> 6.9 ms) and its index output
+    references the **original** candidate array
+    (`loc_bboxIndex = beforeNMS_index_array[...]` in allClassNMS.cu), so it
+    drops straight into where the old index column was.
+    """
+    if keep_topk <= 0:
+        return 0
+    g = model.graph
+    nms_nodes = [
+        n for n in g.node if n.op_type == 'NonMaxSuppression' and not n.domain
+    ]
+    if len(nms_nodes) < 2:
+        logger.info(
+            'efficient-NMS pass: only %d NonMaxSuppression node(s); skipping '
+            '(expected a pre-decoder one plus decoder ones)', len(nms_nodes))
+        return 0
+    nms = nms_nodes[0]
+    by_output = {o: n for n in g.node for o in n.output}
+    consumers = {}
+    for n in g.node:
+        for i in n.input:
+            consumers.setdefault(i, []).append(n)
+    try:
+        iou = _const_scalar(by_output, g, nms.input[3], 0.8)
+        p = 'trtpass_effnms'
+        c_ax = helper.make_node(
+            'Constant', [], [p + '_ax'],
+            name=p + '_ax',
+            value=numpy_helper.from_array(np.array([2], dtype=np.int64)))
+        c_perm = helper.make_node(
+            'Constant', [], [p + '_perm'],
+            name=p + '_perm',
+            value=numpy_helper.from_array(np.array([0, 2, 1], dtype=np.int64)))
+        c_shape = helper.make_node(
+            'Constant', [], [p + '_shape'],
+            name=p + '_shape',
+            value=numpy_helper.from_array(
+                np.array([keep_topk, 1], dtype=np.int64)))
+        boxes4 = helper.make_node(
+            'Unsqueeze', [nms.input[0], p + '_ax'], [p + '_boxes'],
+            name=p + '_boxes',
+            axes=[2])
+        scores_t = helper.make_node(
+            'Transpose', [nms.input[1], p + '_perm'], [p + '_scores'],
+            name=p + '_scores',
+            perm=[0, 2, 1])
+        plugin = helper.make_node(
+            'TRTBatchedNMS', [p + '_boxes', p + '_scores'],
+            [p + '_dets', p + '_labels', p + '_idx'],
+            domain='mmdeploy',
+            name=p,
+            background_label_id=-1,
+            num_classes=1,
+            topk=int(topk),
+            keep_topk=int(keep_topk),
+            score_threshold=0.0,
+            iou_threshold=float(iou),
+            is_normalized=0,
+            clip_boxes=0,
+            return_index=1)
+        # rename trick (same reason as in bound_nms_candidates): the keep-index
+        # tensor is also captured implicitly by the following ONNX `If`
+        # subgraphs, so the replacement must take over the original name.
+        col = consumers[nms.output[0]][0]
+        if col.op_type != 'Gather':
+            raise ValueError('unexpected NMS output consumer')
+        orig = col.output[0]
+        flat = helper.make_node(
+            'Reshape', [p + '_idx', p + '_shape'], [orig], name=p + '_out')
+        g.node.extend([c_ax, c_perm, c_shape, boxes4, scores_t, plugin, flat])
+        g.node.remove(nms)  # old slow NMS + its index-column Gather
+        g.node.remove(col)
+        _toposort(g)
+        logger.info(
+            'TRT pass: replaced the pre-decoder NonMaxSuppression with '
+            'TRTBatchedNMS (topk=%d, keep_topk=%d, iou=%g)', topk, keep_topk,
+            iou)
+        return 1
+    except Exception as e:  # noqa: BLE001
+        logger.warning('efficient-NMS pass skipped: %s', e)
+        return 0
+
+
 def _log():
     """Mmengine's root logger when available (so warnings show up in
     tools/deploy.py output), the stdlib logger otherwise."""
@@ -263,7 +377,9 @@ def _log():
 def apply_trt_graph_passes(onnx_model,
                            fp16_mode=False,
                            nms_pre_topk=0,
-                           use_native_grid_sample=None):
+                           use_native_grid_sample=None,
+                           nms_efficient_keep_topk=0,
+                           nms_efficient_topk=3000):
     """Apply every enabled TensorRT-only ONNX pass, in place.
 
     Args:
@@ -271,18 +387,31 @@ def apply_trt_graph_passes(onnx_model,
         fp16_mode (bool): whether an FP16 engine is being built.  The native
             GridSample pass is only a win for FP16 (see module docstring), so
             it defaults to `fp16_mode`.
-        nms_pre_topk (int): candidate bound for NonMaxSuppression; <= 0 keeps
-            the export untouched.
+        nms_pre_topk (int): candidate bound for the *remaining*
+            NonMaxSuppression nodes (`k = min(nms_pre_topk, candidates)`);
+            <= 0 leaves them untouched.  This is what the five decoder-side
+            NMS calls need (it is a no-op for them, their candidate set never
+            exceeds num_queries).
         use_native_grid_sample (bool | None): explicit override for the
             GridSample pass.  `None` (default) means "on iff fp16_mode".
+        nms_efficient_keep_topk (int): if > 0, replace the pre-decoder
+            NonMaxSuppression with the TRTBatchedNMS plugin keeping this many
+            boxes; <= 0 (default) disables the pass.
+        nms_efficient_topk (int): the plugin's own pre-NMS top-k, clamped to
+            `MAX_EFFICIENT_TOPK` (5120, the plugin's hard limit).
 
     Returns:
         onnx.ModelProto
     """
     if use_native_grid_sample is None:
         use_native_grid_sample = fp16_mode
-    if not use_native_grid_sample and (nms_pre_topk is None
-                                       or nms_pre_topk <= 0):
+    nms_efficient_keep_topk = int(nms_efficient_keep_topk or 0)
+    if nms_efficient_keep_topk > 0:
+        nms_efficient_topk = min(
+            int(nms_efficient_topk or 0), MAX_EFFICIENT_TOPK)
+    if not use_native_grid_sample and \
+            (nms_pre_topk is None or nms_pre_topk <= 0) and \
+            nms_efficient_keep_topk <= 0:
         return onnx_model
     # work on a copy so a failure half-way cannot corrupt the caller's model
     model = onnx.ModelProto()
@@ -290,6 +419,9 @@ def apply_trt_graph_passes(onnx_model,
     try:
         if use_native_grid_sample:
             swap_grid_sampler_for_native(model)
+        if nms_efficient_keep_topk > 0:
+            swap_first_nms_for_efficient(model, nms_efficient_keep_topk,
+                                         nms_efficient_topk)
         bound_nms_candidates(model, nms_pre_topk)
     except Exception:  # noqa: BLE001
         _log().exception('TRT graph passes failed; falling back to the '
