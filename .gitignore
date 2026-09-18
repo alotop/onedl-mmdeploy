@@ -179,3 +179,5 @@ mmdeploy_build*/
 /work-dirs
 
 local/
+
+.vscode/
