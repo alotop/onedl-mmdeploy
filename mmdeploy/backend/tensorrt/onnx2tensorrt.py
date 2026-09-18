@@ -98,6 +98,11 @@ def onnx2tensorrt(work_dir: str,
         # 0 (default) leaves it to the ONNX implementation.
         nms_efficient_keep_topk=final_params.get('nms_efficient_keep_topk', 0),
         nms_efficient_topk=final_params.get('nms_efficient_topk', 3000),
+        # Also replace the five decoder-side NMS nodes.  Their keep-index
+        # *count* is semantic (it builds the distinct-query attention mask);
+        # the pass restores the variable length with a dynamic slice, so the
+        # semantics stay identical.
+        nms_efficient_all=final_params.get('nms_efficient_all', False),
         # Keep the MSDA plugin in FP32 (its FP16 kernel accumulates in half
         # precision, which is less accurate than the decomposed path it
         # replaces).  Default False = let the builder decide.

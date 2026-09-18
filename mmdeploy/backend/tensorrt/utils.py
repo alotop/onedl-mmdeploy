@@ -108,6 +108,7 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
               use_native_grid_sample: Optional[bool] = None,
               nms_efficient_keep_topk: int = 0,
               nms_efficient_topk: int = 3000,
+              nms_efficient_all: bool = False,
               msda_fp32: bool = False,
               **kwargs) -> trt.ICudaEngine:
     """Create a tensorrt engine from ONNX.
@@ -205,7 +206,8 @@ def from_onnx(onnx_model: Union[str, onnx.ModelProto],
         nms_pre_topk=nms_pre_topk,
         use_native_grid_sample=use_native_grid_sample,
         nms_efficient_keep_topk=nms_efficient_keep_topk,
-        nms_efficient_topk=nms_efficient_topk)
+        nms_efficient_topk=nms_efficient_topk,
+        nms_efficient_all=nms_efficient_all)
 
     if isinstance(onnx_model, str):
         parse_valid = parser.parse_from_file(onnx_model)
