@@ -113,6 +113,19 @@ def _fx_wrap_copied_fn(func: types.FunctionType,
     if not hasattr(func, '__globals__'):
         return
 
+    if isinstance(_wrapped_fns_to_patch, dict):
+        # torch >= 2.1 stores ``{(id(globals), name): globals}``. Register
+        # the copied function's globals for every entry pointing at the
+        # original function's globals, so the copied wrapped leaf functions
+        # are patched by ``torch.fx._symbolic_trace._patch_wrapped_functions``
+        # just like the originals.
+        for (_, name), glb in list(_wrapped_fns_to_patch.items()):
+            if glb is func.__globals__:
+                key = (id(copied_func.__globals__), name)
+                if key not in _wrapped_fns_to_patch:
+                    _wrapped_fns_to_patch[key] = copied_func.__globals__
+        return
+
     wrapped_fns_globals = [item[0] for item in _wrapped_fns_to_patch]
     wrapped_fns_names = [item[1] for item in _wrapped_fns_to_patch]
 
@@ -179,6 +192,11 @@ class FunctionRewriter:
         functions_records = self._registry.get_records(env)
         # Get current fx wrapped func nums
         self._ori_fx_wrap_num = len(_wrapped_fns_to_patch)
+        # torch >= 2.1 stores _wrapped_fns_to_patch as a dict; keep a
+        # snapshot so ``exit`` can drop exactly the entries added here.
+        self._ori_fx_wrap_keys = (
+            set(_wrapped_fns_to_patch)
+            if isinstance(_wrapped_fns_to_patch, dict) else None)
 
         self._origin_functions = list()
         self._additional_functions = list()
@@ -247,9 +265,15 @@ class FunctionRewriter:
     def exit(self):
         """Recover the function rewrite."""
         # Restore _wrapped_fns_to_patch
-        cur_fx_wrap_num = len(_wrapped_fns_to_patch)
-        for _ in range(cur_fx_wrap_num - self._ori_fx_wrap_num):
-            _wrapped_fns_to_patch.pop(-1)
+        if getattr(self, '_ori_fx_wrap_keys', None) is not None:
+            # torch >= 2.1: dict layout, drop the entries added in enter()
+            for key in set(_wrapped_fns_to_patch) - self._ori_fx_wrap_keys:
+                _wrapped_fns_to_patch.pop(key, None)
+        else:
+            # legacy list layout
+            cur_fx_wrap_num = len(_wrapped_fns_to_patch)
+            for _ in range(cur_fx_wrap_num - self._ori_fx_wrap_num):
+                _wrapped_fns_to_patch.pop(-1)
 
         for func_dict in self._origin_functions:
             func_path = func_dict['func_path']

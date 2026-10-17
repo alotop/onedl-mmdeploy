@@ -181,3 +181,4 @@ mmdeploy_build*/
 local/
 
 .vscode/
+.workbuddy/
