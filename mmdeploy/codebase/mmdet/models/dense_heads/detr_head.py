@@ -32,31 +32,29 @@ def detrhead__predict_by_feat__default(self,
     img_shape = img_shape.unsqueeze(0)
 
     max_per_img = self.test_cfg.get('max_per_img', len(cls_scores[0]))
-    batch_size = cls_scores.size(0)
-    # `batch_index_offset` is used for the gather of concatenated tensor
 
     # supports dynamical batch inference
     if self.loss_cls.use_sigmoid:
-        batch_index_offset = torch.arange(batch_size).to(
-            cls_scores.device) * max_per_img
-        batch_index_offset = batch_index_offset.unsqueeze(1).expand(
-            batch_size, max_per_img)
         cls_scores = cls_scores.sigmoid()
         scores, indexes = cls_scores.flatten(1).topk(max_per_img, dim=1)
         det_labels = indexes % self.num_classes
+        # NOTE: `indexes // num_classes` is already the query index *within*
+        # the image, so gather along dim 1 -- no cross-image offset needed.
+        # The old `arange(batch_size) * max_per_img` offset looked correct,
+        # but `cls_scores.size(0)` is a python int while tracing, so it
+        # baked the *exported* batch size into the graph: for any other batch
+        # size every image then gathered its boxes from image 0.
         bbox_index = indexes // self.num_classes
-        bbox_index = (bbox_index + batch_index_offset).view(-1)
-        bbox_preds = bbox_preds.view(-1, 4)[bbox_index]
-        bbox_preds = bbox_preds.view(batch_size, -1, 4)
+        bbox_preds = torch.gather(
+            bbox_preds, 1,
+            bbox_index.unsqueeze(-1).expand(-1, -1, bbox_preds.size(-1)))
     else:
         scores, det_labels = F.softmax(cls_scores, dim=-1)[..., :-1].max(-1)
         scores, bbox_index = scores.topk(max_per_img, dim=1)
-        batch_inds = torch.arange(
-            batch_size, device=scores.device).unsqueeze(-1)
-        bbox_preds = bbox_preds[batch_inds, bbox_index, ...]
-        # add unsqueeze to support tensorrt
-        det_labels = det_labels.unsqueeze(-1)[batch_inds, bbox_index,
-                                              ...].squeeze(-1)
+        bbox_preds = torch.gather(
+            bbox_preds, 1,
+            bbox_index.unsqueeze(-1).expand(-1, -1, bbox_preds.size(-1)))
+        det_labels = torch.gather(det_labels, 1, bbox_index)
 
     det_bboxes = bbox_cxcywh_to_xyxy(bbox_preds)
     det_bboxes.clamp_(min=0., max=1.)
